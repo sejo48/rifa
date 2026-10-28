@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="es" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lotería de Cloud (Local)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Configuración inicial del tema antes de que cargue el body para evitar parpadeos
+        if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+        tailwind.config = { darkMode: 'class' }
+    </script>
+    <style>
+        .number-btn { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .number-btn:active { transform: scale(0.9); }
+        .number-hidden { display: none !important; }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 font-sans min-h-screen text-slate-800 dark:text-slate-100 flex flex-col transition-colors duration-300">
+
+    <!-- Botón Flotante Modo Oscuro/Claro -->
+    <button onclick="toggleTheme()" class="fixed top-4 right-4 z-50 p-3 rounded-full bg-white dark:bg-slate-800 shadow-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-amber-400 hover:scale-110 transition-all">
+        <svg id="sun-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 9h-1m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z" />
+        </svg>
+        <svg id="moon-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 block dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+        </svg>
+    </button>
+
+    <div class="max-w-4xl mx-auto px-4 py-6 flex-grow w-full">
+        <header class="text-center mb-6 relative">
+            <h1 class="text-3xl font-extrabold text-blue-600 dark:text-blue-400 mb-2">Lotería de Cloud</h1>
+            <div class="flex flex-col items-center gap-2">
+                <div class="flex items-center gap-2">
+                    <p id="role-badge" class="bg-slate-200 dark:bg-slate-700 px-3 py-1 rounded-full text-[10px] font-bold uppercase">Modo Observador</p>
+                    <div class="bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 px-2 py-0.5 rounded text-[9px] font-bold uppercase shadow-sm">Guardado en PC</div>
+                </div>
+                <button id="admin-entry-btn" onclick="openModal('login-modal')" class="text-blue-500 text-xs font-bold hover:underline">Acceso Admin</button>
+                <button id="admin-logout-btn" onclick="logoutAdmin()" class="hidden text-red-500 text-xs font-bold hover:underline">Salir de Admin</button>
+            </div>
+        </header>
+
+        <!-- Selector de Sorteo -->
+        <div class="flex p-1 bg-slate-200 dark:bg-slate-800 rounded-xl mb-4 max-w-xs mx-auto">
+            <button id="tab-draw1" onclick="switchDraw('draw1')" class="flex-1 py-2 text-sm font-bold rounded-lg bg-white dark:bg-blue-600 text-blue-600 dark:text-white shadow-sm transition-all">Sorteo A</button>
+            <button id="tab-draw2" onclick="switchDraw('draw2')" class="flex-1 py-2 text-sm font-bold rounded-lg text-slate-500 dark:text-slate-400 transition-all">Sorteo B</button>
+        </div>
+
+        <!-- Buscador de Jugador -->
+        <div class="mb-6 max-w-md mx-auto relative">
+            <input type="text" id="search-input" oninput="filterGrid()" placeholder="Buscar jugador (ej: Jorge)..." class="w-full px-4 py-3 rounded-2xl border-2 border-slate-200 dark:border-slate-700 dark:bg-slate-800 font-bold outline-none focus:border-blue-500 transition-all shadow-sm">
+            <div class="absolute right-4 top-3.5 text-slate-400">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+            </div>
+        </div>
+
+        <div id="number-grid" class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-2 mb-8"></div>
+
+        <div id="admin-panel" class="hidden space-y-4">
+            <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl p-6 shadow-sm">
+                <h3 class="font-bold mb-4 text-slate-700 dark:text-slate-200 uppercase text-xs tracking-widest text-center">Resumen de Ventas</h3>
+                <div id="summary-list" class="space-y-2 max-h-60 overflow-y-auto"></div>
+            </div>
+            
+            <div class="flex flex-col gap-2 items-center pt-4">
+                <button onclick="openModal('reset-draw-modal')" class="text-amber-600 text-[10px] font-bold uppercase tracking-tight hover:underline">Vaciar Sorteo Actual</button>
+                <button onclick="openModal('full-reset-modal')" class="text-red-600 text-[11px] font-black uppercase tracking-widest hover:scale-105 transition-transform mt-4 border-2 border-red-100 dark:border-red-900/30 px-4 py-2 rounded-full">⚠️ Reiniciar Aplicación a Cero</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modales -->
+    <div id="login-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-sm rounded-3xl p-8 text-center shadow-2xl">
+            <h3 class="text-xl font-bold mb-4">Acceso Admin</h3>
+            <input type="password" id="admin-password-input" placeholder="••••" class="w-full px-4 py-3 rounded-xl border-2 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-center text-2xl font-bold mb-4 outline-none">
+            <div class="flex gap-3">
+                <button onclick="closeModal('login-modal')" class="flex-1 py-3 bg-slate-100 dark:bg-slate-700 rounded-xl font-bold">Cerrar</button>
+                <button onclick="checkAdminPassword()" class="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold">Entrar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="edit-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl p-6 shadow-2xl">
+            <h2 id="modal-title" class="text-3xl font-black mb-6 text-center">Número --</h2>
+            <div id="info-display" class="hidden p-5 bg-blue-50 dark:bg-blue-900/20 rounded-2xl border-2 border-blue-100 dark:border-blue-800 mb-4 text-center">
+                <p id="display-name" class="text-2xl font-bold text-slate-800 dark:text-blue-300"></p>
+                <div id="display-status-badge" class="mt-2 inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase"></div>
+            </div>
+            <div id="admin-inputs" class="hidden space-y-4">
+                <input type="text" id="input-name" placeholder="Nombre del Comprador" class="w-full px-4 py-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 dark:bg-slate-900 font-bold focus:border-blue-500 outline-none">
+                <select id="input-status" class="w-full px-4 py-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 dark:bg-slate-900 font-bold outline-none">
+                    <option value="reserved">⏳ APARTADO</option>
+                    <option value="cancelled">✅ PAGADO</option>
+                </select>
+                <button onclick="saveData()" class="w-full bg-blue-600 text-white font-black py-5 rounded-2xl shadow-lg shadow-blue-200 dark:shadow-none">Guardar Cambios</button>
+                <button onclick="deleteEntry()" class="w-full text-red-500 py-2 text-[10px] font-bold uppercase mt-2">Liberar número</button>
+            </div>
+            <div id="observer-msg" class="text-slate-400 text-center py-8 hidden italic">Número disponible para compra.</div>
+            <button onclick="closeModal('edit-modal')" class="w-full mt-4 py-2 text-slate-400 text-xs font-bold uppercase">CERRAR</button>
+        </div>
+    </div>
+
+    <!-- Modal Vaciar Sorteo -->
+    <div id="reset-draw-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-sm rounded-3xl p-8 text-center">
+            <h3 class="text-xl font-bold mb-6">¿Vaciar este sorteo?</h3>
+            <p class="text-sm text-slate-500 mb-6">Se borrarán todos los números del sorteo seleccionado.</p>
+            <button onclick="clearCurrentDraw()" class="w-full py-4 bg-amber-600 text-white rounded-xl font-bold mb-2">Sí, vaciar</button>
+            <button onclick="closeModal('reset-draw-modal')" class="w-full py-3 bg-slate-100 dark:bg-slate-700 rounded-xl font-bold">Cancelar</button>
+        </div>
+    </div>
+
+    <!-- Modal Reinicio Total -->
+    <div id="full-reset-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-sm rounded-3xl p-8 text-center border-4 border-red-500">
+            <h3 class="text-2xl font-black mb-4 text-red-600">PELIGRO</h3>
+            <p class="text-sm font-bold mb-6">Esto borrará TODA la aplicación (Sorteo A y B) y todos los nombres guardados en este PC. ¿Estás seguro?</p>
+            <button onclick="factoryReset()" class="w-full py-4 bg-red-600 text-white rounded-xl font-black mb-2 shadow-lg">BORRAR TODO DEFINITIVAMENTE</button>
+            <button onclick="closeModal('full-reset-modal')" class="w-full py-3 bg-slate-100 dark:bg-slate-700 rounded-xl font-bold">CANCELAR</button>
+        </div>
+    </div>
+
+    <script>
+        let lotteryData = {};
+        let currentDraw = 'draw1';
+        let currentSelectedNumber = null;
+        let isAdmin = false;
+
+        // Función para cambiar el tema
+        function toggleTheme() {
+            if (document.documentElement.classList.contains('dark')) {
+                document.documentElement.classList.remove('dark');
+                localStorage.setItem('theme', 'light');
+            } else {
+                document.documentElement.classList.add('dark');
+                localStorage.setItem('theme', 'dark');
+            }
+        }
+
+        function renderGrid() {
+            const grid = document.getElementById('number-grid');
+            if(!grid) return;
+            grid.innerHTML = '';
+            for (let i = 0; i <= 99; i++) {
+                const btn = document.createElement('button');
+                btn.id = `btn-${i}`;
+                btn.innerText = i.toString().padStart(2, '0');
+                const base = "number-btn h-12 flex items-center justify-center rounded-xl font-black text-lg border-b-4 transition-all ";
+                let colors = "bg-white dark:bg-slate-800 text-blue-500 dark:text-blue-400 border-slate-200 dark:border-slate-700 hover:border-blue-400";
+                
+                if (lotteryData[i]) {
+                    colors = lotteryData[i].status === 'cancelled' ? "bg-emerald-500 text-white border-emerald-700 shadow-lg" : "bg-amber-500 text-white border-amber-700 shadow-lg";
+                }
+                
+                btn.className = base + colors;
+                btn.onclick = () => openEditModal(i);
+                grid.appendChild(btn);
+            }
+            filterGrid();
+        }
+
+        window.filterGrid = () => {
+            const query = document.getElementById('search-input').value.toLowerCase().trim();
+            for (let i = 0; i <= 99; i++) {
+                const btn = document.getElementById(`btn-${i}`);
+                if (!btn) continue;
+                
+                if (query === "") {
+                    btn.classList.remove('number-hidden');
+                } else {
+                    const data = lotteryData[i];
+                    if (data && data.name.toLowerCase().includes(query)) {
+                        btn.classList.remove('number-hidden');
+                    } else {
+                        btn.classList.add('number-hidden');
+                    }
+                }
+            }
+        };
+
+        function loadLocal() {
+            const saved = localStorage.getItem(`local_loteria_jorge_${currentDraw}`);
+            lotteryData = saved ? JSON.parse(saved) : {};
+            renderGrid();
+            updateSummary();
+        }
+
+        function saveLocal() {
+            localStorage.setItem(`local_loteria_jorge_${currentDraw}`, JSON.stringify(lotteryData));
+        }
+
+        window.saveData = () => {
+            const name = document.getElementById('input-name').value.trim();
+            if (!name) return;
+            lotteryData[currentSelectedNumber] = { 
+                name: name, 
+                status: document.getElementById('input-status').value 
+            };
+            saveLocal();
+            renderGrid();
+            updateSummary();
+            closeModal('edit-modal');
+        };
+
+        window.deleteEntry = () => {
+            delete lotteryData[currentSelectedNumber];
+            saveLocal();
+            renderGrid();
+            updateSummary();
+            closeModal('edit-modal');
+        };
+
+        window.switchDraw = (draw) => {
+            currentDraw = draw;
+            document.getElementById('search-input').value = "";
+            document.getElementById('tab-draw1').className = draw==='draw1' ? "flex-1 py-2 text-sm font-bold rounded-lg bg-white dark:bg-blue-600 text-blue-600 dark:text-white shadow-sm" : "flex-1 py-2 text-sm font-bold rounded-lg text-slate-500 dark:text-slate-400";
+            document.getElementById('tab-draw2').className = draw==='draw2' ? "flex-1 py-2 text-sm font-bold rounded-lg bg-white dark:bg-blue-600 text-blue-600 dark:text-white shadow-sm" : "flex-1 py-2 text-sm font-bold rounded-lg text-slate-500 dark:text-slate-400";
+            loadLocal();
+        };
+
+        window.checkAdminPassword = () => {
+            if (document.getElementById('admin-password-input').value === "8384") {
+                isAdmin = true;
+                document.getElementById('role-badge').innerText = "Admin Maestro";
+                document.getElementById('admin-panel').classList.remove('hidden');
+                document.getElementById('admin-entry-btn').classList.add('hidden');
+                document.getElementById('admin-logout-btn').classList.remove('hidden');
+                closeModal('login-modal');
+                renderGrid();
+                updateSummary();
+            }
+        };
+
+        window.openEditModal = (num) => {
+            currentSelectedNumber = num;
+            document.getElementById('modal-title').innerText = `Número ${num.toString().padStart(2, '0')}`;
+            const data = lotteryData[num];
+
+            if (isAdmin) {
+                document.getElementById('admin-inputs').classList.remove('hidden');
+                document.getElementById('info-display').classList.add('hidden');
+                document.getElementById('observer-msg').classList.add('hidden');
+                document.getElementById('input-name').value = data ? data.name : '';
+                document.getElementById('input-status').value = data ? data.status : 'reserved';
+            } else {
+                document.getElementById('admin-inputs').classList.add('hidden');
+                if (data) {
+                    document.getElementById('info-display').classList.remove('hidden');
+                    document.getElementById('observer-msg').classList.add('hidden');
+                    document.getElementById('display-name').innerText = data.name;
+                    const isPaid = data.status === 'cancelled';
+                    const b = document.getElementById('display-status-badge');
+                    b.innerText = isPaid ? 'PAGADO' : 'APARTADO';
+                    b.className = isPaid ? "mt-2 inline-block px-3 py-1 rounded-full text-[10px] font-black bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400" : "mt-2 inline-block px-3 py-1 rounded-full text-[10px] font-black bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400";
+                } else {
+                    document.getElementById('info-display').classList.add('hidden');
+                    document.getElementById('observer-msg').classList.remove('hidden');
+                }
+            }
+            openModal('edit-modal');
+        };
+
+        function updateSummary() {
+            const list = document.getElementById('summary-list');
+            if (!isAdmin || !list) return;
+            const names = {};
+            Object.values(lotteryData).forEach(d => names[d.name] = (names[d.name] || 0) + 1);
+            const sortedNames = Object.keys(names).sort();
+            list.innerHTML = sortedNames.length > 0 
+                ? sortedNames.map(n => `<div class="flex justify-between p-2 bg-slate-100 dark:bg-slate-900 rounded-lg mb-1"><span class="font-bold text-xs">${n}</span><span class="text-xs font-bold text-blue-500">${names[n]} núm.</span></div>`).join('')
+                : `<p class="text-center text-slate-400 text-xs py-4">No hay ventas registradas</p>`;
+        }
+
+        window.openModal = (id) => document.getElementById(id).classList.remove('hidden');
+        window.closeModal = (id) => document.getElementById(id).classList.add('hidden');
+        window.logoutAdmin = () => location.reload();
+
+        window.clearCurrentDraw = () => {
+            lotteryData = {};
+            saveLocal();
+            renderGrid();
+            updateSummary();
+            closeModal('reset-draw-modal');
+        };
+
+        window.factoryReset = () => {
+            localStorage.clear();
+            location.reload();
+        };
+
+        loadLocal();
+    </script>
+</body>
+</html>
