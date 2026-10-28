@@ -1,0 +1,13 @@
+import {readFile, mkdir, writeFile, cp, rm} from 'node:fs/promises';
+const page = await readFile('web/index.html', 'utf8');
+const source = await readFile('worker/index.js', 'utf8');
+const output = source.replace('const HTML = "__PAGE_HTML__";', `const HTML = ${JSON.stringify(page)};`);
+if (source === output) throw new Error('Missing HTML build marker');
+await rm('dist', {recursive:true, force:true});
+await mkdir('dist/server', {recursive:true});
+await writeFile('dist/server/index.js', output);
+await cp('.openai', 'dist/.openai', {recursive:true});
+await cp('drizzle', 'dist/drizzle', {recursive:true});
+const worker = await import(new URL('../dist/server/index.js', import.meta.url));
+if (typeof worker.default.fetch !== 'function') throw new Error('Invalid Worker');
+console.log('Built standalone Worker, HTML, manifest and D1 migrations.');

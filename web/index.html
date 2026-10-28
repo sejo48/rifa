@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="es" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lotería de Cloud · Sorteos compartidos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Configuración inicial del tema antes de que cargue el body para evitar parpadeos
+        try { if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+        } catch {}
+        if (window.tailwind) tailwind.config = { darkMode: 'class' }
+    </script>
+    <style>
+        .number-btn { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .number-btn:active { transform: scale(0.9); }
+        .number-hidden, .hidden { display: none !important; }
+        button:disabled { opacity: .5; cursor: wait; }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 font-sans min-h-screen text-slate-800 dark:text-slate-100 flex flex-col transition-colors duration-300">
+
+    <!-- Botón Flotante Modo Oscuro/Claro -->
+    <button onclick="toggleTheme()" aria-label="Cambiar tema" class="fixed top-4 right-4 z-50 p-3 rounded-full bg-white dark:bg-slate-800 shadow-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-amber-400 hover:scale-110 transition-all">
+        <svg id="sun-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 hidden dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 9h-1m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z" />
+        </svg>
+        <svg id="moon-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 block dark:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+        </svg>
+    </button>
+
+    <div class="max-w-4xl mx-auto px-4 py-6 flex-grow w-full">
+        <header class="text-center mb-6 relative">
+            <h1 class="text-3xl font-extrabold text-blue-600 dark:text-blue-400 mb-2">Lotería de Cloud</h1>
+            <div class="flex flex-col items-center gap-2">
+                <div class="flex items-center gap-2">
+                    <p id="role-badge" class="bg-slate-200 dark:bg-slate-700 px-3 py-1 rounded-full text-[10px] font-bold uppercase">Modo Observador</p>
+                    <div class="bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 px-2 py-0.5 rounded text-[9px] font-bold uppercase shadow-sm">Guardado en la web</div>
+                </div>
+                <a id="admin-entry-btn" href="/signin-with-chatgpt?return_to=%2F" target="_top" class="text-blue-500 text-xs font-bold hover:underline">Acceso Admin con ChatGPT</a>
+                <a id="admin-logout-btn" href="/signout-with-chatgpt?return_to=%2F" target="_top" class="hidden text-red-500 text-xs font-bold hover:underline">Cerrar sesión</a>
+            </div>
+        <p id="sync-status" role="status" aria-live="polite" class="text-xs text-slate-500 mt-3">Conectando con los sorteos…</p>
+            <p id="message" role="alert" class="text-sm font-bold text-red-600 mt-2"></p>
+        </header>
+
+        <!-- Selector de Sorteo -->
+        <div class="flex p-1 bg-slate-200 dark:bg-slate-800 rounded-xl mb-4 max-w-xs mx-auto">
+            <button id="tab-draw1" onclick="switchDraw('draw1')" class="flex-1 py-2 text-sm font-bold rounded-lg bg-white dark:bg-blue-600 text-blue-600 dark:text-white shadow-sm transition-all">Sorteo A</button>
+            <button id="tab-draw2" onclick="switchDraw('draw2')" class="flex-1 py-2 text-sm font-bold rounded-lg text-slate-500 dark:text-slate-400 transition-all">Sorteo B</button>
+        </div>
+
+        <!-- Buscador de Jugador -->
+        <div class="mb-6 max-w-md mx-auto relative">
+            <input type="text" id="search-input" aria-label="Buscar jugador" oninput="filterGrid()" placeholder="Buscar jugador (ej: Jorge)..." class="w-full px-4 py-3 rounded-2xl border-2 border-slate-200 dark:border-slate-700 dark:bg-slate-800 font-bold outline-none focus:border-blue-500 transition-all shadow-sm">
+            <div class="absolute right-4 top-3.5 text-slate-400">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+            </div>
+        </div>
+
+        <div class="flex justify-center gap-4 text-xs mb-4"><span>🔵 Disponible</span><span>🟠 Apartado</span><span>🟢 Pagado</span></div>
+        <div id="number-grid" class="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 gap-2 mb-8"></div>
+
+        <div id="admin-panel" class="hidden space-y-4">
+            <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl p-6 shadow-sm">
+                <h3 class="font-bold mb-4 text-slate-700 dark:text-slate-200 uppercase text-xs tracking-widest text-center">Resumen de Ventas</h3>
+                <div id="summary-list" class="space-y-2 max-h-60 overflow-y-auto"></div>
+            </div>
+            
+            <div class="flex flex-col gap-2 items-center pt-4">
+                <button onclick="exportBackup()" class="text-blue-600 text-sm font-bold hover:underline">Descargar respaldo</button>
+                <label class="text-blue-600 text-sm font-bold cursor-pointer">Importar respaldo local
+                  <input id="import-file" type="file" accept="application/json,.json" onchange="previewImport(this)" class="block text-xs mt-2" />
+                </label>
+                <p class="text-xs text-slate-500 text-center">La importación agrega números disponibles sin reemplazar ventas existentes.</p>
+                <button onclick="openModal('reset-draw-modal')" class="text-amber-600 text-[10px] font-bold uppercase tracking-tight hover:underline">Vaciar Sorteo Actual</button>
+                <button onclick="openModal('full-reset-modal')" class="text-red-600 text-[11px] font-black uppercase tracking-widest hover:scale-105 transition-transform mt-4 border-2 border-red-100 dark:border-red-900/30 px-4 py-2 rounded-full">⚠️ Reiniciar Aplicación a Cero</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modales -->
+    <div id="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" class="fixed inset-0 bg-slate-900/60 hidden z-50 flex items-center justify-center p-4">
+      <div class="bg-white dark:bg-slate-800 max-w-sm w-full p-6 rounded-2xl">
+        <h2 id="import-title" class="text-xl font-bold">Importar respaldo</h2>
+        <p id="import-preview" class="my-4"></p>
+        <button onclick="confirmImport()" class="w-full bg-blue-600 text-white p-3 rounded-xl">Confirmar importación</button>
+        <button onclick="closeModal('import-modal')" class="w-full mt-2 p-3">Cancelar</button>
+      </div>
+    </div>
+
+    <div id="edit-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl p-6 shadow-2xl">
+            <h2 id="modal-title" class="text-3xl font-black mb-6 text-center">Número --</h2>
+            <div id="info-display" class="hidden p-5 bg-blue-50 dark:bg-blue-900/20 rounded-2xl border-2 border-blue-100 dark:border-blue-800 mb-4 text-center">
+                <p id="display-name" class="text-2xl font-bold text-slate-800 dark:text-blue-300"></p>
+                <div id="display-status-badge" class="mt-2 inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase"></div>
+            </div>
+            <div id="admin-inputs" class="hidden space-y-4">
+                <input type="text" id="input-name" maxlength="100" aria-label="Nombre del comprador" placeholder="Nombre del Comprador" class="w-full px-4 py-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 dark:bg-slate-900 font-bold focus:border-blue-500 outline-none">
+                <select id="input-status" aria-label="Estado de pago" class="w-full px-4 py-4 rounded-xl border-2 border-slate-200 dark:border-slate-700 dark:bg-slate-900 font-bold outline-none">
+                    <option value="reserved">⏳ APARTADO</option>
+                    <option value="cancelled">✅ PAGADO</option>
+                </select>
+                <button onclick="saveData()" class="w-full bg-blue-600 text-white font-black py-5 rounded-2xl shadow-lg shadow-blue-200 dark:shadow-none">Guardar Cambios</button>
+                <button onclick="deleteEntry()" class="w-full text-red-500 py-2 text-[10px] font-bold uppercase mt-2">Liberar número</button>
+            </div>
+            <div id="observer-msg" class="text-slate-400 text-center py-8 hidden italic">Número disponible para compra.</div>
+            <button onclick="closeModal('edit-modal')" class="w-full mt-4 py-2 text-slate-400 text-xs font-bold uppercase">CERRAR</button>
+        </div>
+    </div>
+
+    <!-- Modal Vaciar Sorteo -->
+    <div id="reset-draw-modal" role="dialog" aria-modal="true" aria-labelledby="reset-title" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-sm rounded-3xl p-8 text-center">
+            <h3 id="reset-title" class="text-xl font-bold mb-6">¿Vaciar este sorteo?</h3>
+            <p class="text-sm text-slate-500 mb-6">Se borrarán todas las ventas del sorteo seleccionado para todos los visitantes.</p>
+            <button onclick="clearCurrentDraw()" class="w-full py-4 bg-amber-600 text-white rounded-xl font-bold mb-2">Sí, vaciar</button>
+            <button onclick="closeModal('reset-draw-modal')" class="w-full py-3 bg-slate-100 dark:bg-slate-700 rounded-xl font-bold">Cancelar</button>
+        </div>
+    </div>
+
+    <!-- Modal Reinicio Total -->
+    <div id="full-reset-modal" role="dialog" aria-modal="true" aria-labelledby="full-reset-title" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-sm rounded-3xl p-8 text-center border-4 border-red-500">
+            <h3 id="full-reset-title" class="text-2xl font-black mb-4 text-red-600">PELIGRO</h3>
+            <p class="text-sm font-bold mb-6">Esto borrará las ventas de los sorteos A y B para todos los visitantes. Descarga un respaldo antes de continuar. ¿Estás seguro?</p>
+            <button onclick="factoryReset()" class="w-full py-4 bg-red-600 text-white rounded-xl font-black mb-2 shadow-lg">BORRAR TODO DEFINITIVAMENTE</button>
+            <button onclick="closeModal('full-reset-modal')" class="w-full py-3 bg-slate-100 dark:bg-slate-700 rounded-xl font-bold">CANCELAR</button>
+        </div>
+    </div>
+
+    <script>
+const DRAWS = ['draw1','draw2'];
+let draws = {draw1:{revision:null,entries:{}},draw2:{revision:null,entries:{}}};
+let currentDraw = 'draw1';
+let selected = null;
+let resetSnapshot = null;
+let isAdmin = false;
+let synced = false;
+let busy = false;
+let refreshing = false;
+let pendingImport = null;
+let requestGeneration = 0;
+let lastFocus = null;
+const $ = id => document.getElementById(id);
+function message(text='') { $('message').textContent = text; }
+function toggleTheme() {
+  const dark = document.documentElement.classList.toggle('dark');
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch {}
+}
+async function api(path, body) {
+  const response = await fetch(path,{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(15000),...(body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {})});
+  let data; try {data=await response.json();} catch {throw new Error('El servidor no respondió correctamente.');}
+  if (!response.ok) throw new Error(data.error || 'No se pudo completar la operación.');
+  return data;
+}
+function setSynced(value) {
+  synced = value;
+  $('sync-status').textContent = value ? 'Actualizado a las '+new Date().toLocaleTimeString('es-CR')+' · Se actualiza cada 5 segundos' : 'Sin conexión con la web. Los cambios están bloqueados hasta recuperar la conexión.';
+  $('sync-status').classList.toggle('text-red-600',!value);
+  updateControls();
+}
+function updateControls() {
+  document.querySelectorAll('#admin-inputs button, #admin-panel button, #import-modal button:first-of-type, #reset-draw-modal button:first-of-type, #full-reset-modal button:first-of-type').forEach(el=>el.disabled=busy || !synced || !isAdmin);
+  $('import-file').disabled=busy || !synced || !isAdmin;
+}
+async function refresh() {
+  if (refreshing || busy) return;
+  refreshing=true;
+  const generation=requestGeneration;
+  try {
+    const data=await api('/api/state');
+    // A refresh started before a mutation must not replace its newer result.
+    if (generation===requestGeneration) {draws=data.draws;setSynced(true);renderGrid();updateSummary();}
+  } catch {
+    if (generation===requestGeneration) setSynced(false);
+  } finally {refreshing=false;}
+}
+async function write(body) {
+  if (!isAdmin || !synced || busy) return false;
+  busy=true;requestGeneration++;updateControls();message();
+  try {
+    const data=await api('/api/state',body);
+    draws=data.draws;setSynced(true);renderGrid();updateSummary();
+    return data;
+  } catch(error) {
+    message(error.name==='TimeoutError' || error.name==='TypeError' ? 'No se confirmó el guardado. Revisa el estado actualizado antes de intentar otra vez.' : error.message);
+    return false;
+  } finally {busy=false;updateControls();void refresh();}
+}
+function renderGrid() {
+  const grid=$('number-grid');
+  grid.replaceChildren();
+  for(let n=0;n<100;n++) {
+    const entry=draws[currentDraw].entries[n];
+    const btn=document.createElement('button');
+    btn.id='btn-'+n;btn.type='button';btn.textContent=String(n).padStart(2,'0');
+    const sold=!!entry?.name;
+    btn.className='number-btn h-12 flex items-center justify-center rounded-xl font-black text-lg border-b-4 '+(sold ? (entry.status==='cancelled' ? 'bg-emerald-500 text-white border-emerald-700' : 'bg-amber-500 text-white border-amber-700') : 'bg-white dark:bg-slate-800 text-blue-500 dark:text-blue-400 border-slate-200 dark:border-slate-700');
+    btn.setAttribute('aria-label', 'Número '+btn.textContent+': '+(sold ? (entry.status==='cancelled' ? 'pagado' : 'apartado') : 'disponible'));
+    btn.onclick=()=>openEditModal(n);
+    grid.appendChild(btn);
+  }
+  filterGrid();
+}
+function filterGrid() {
+  const query=$('search-input').value.toLocaleLowerCase('es').trim();
+  for(let n=0;n<100;n++) {
+    const name=draws[currentDraw].entries[n]?.name || '';
+    $('btn-'+n)?.classList.toggle('number-hidden',!!query && !name.toLocaleLowerCase('es').includes(query));
+  }
+}
+function updateSummary() {
+  const list=$('summary-list');list.replaceChildren();
+  if(!isAdmin) return;
+  const counts=new Map();
+  for(const entry of Object.values(draws[currentDraw].entries)) if(entry.name) counts.set(entry.name,(counts.get(entry.name)||0)+1);
+  if(!counts.size) {const p=document.createElement('p');p.textContent='No hay ventas registradas';list.appendChild(p);return;}
+  for(const name of [...counts.keys()].sort((a,b)=>a.localeCompare(b,'es'))) {
+    const row=document.createElement('div');row.className='flex justify-between gap-4 p-2 bg-slate-100 dark:bg-slate-900 rounded-lg mb-1';
+    const label=document.createElement('span');label.className='font-bold text-xs break-all';label.textContent=name;
+    const count=document.createElement('span');count.className='text-xs font-bold text-blue-500 whitespace-nowrap';count.textContent=counts.get(name)+' núm.';
+    row.append(label,count);list.appendChild(row);
+  }
+}
+function switchDraw(draw) {
+  if (!DRAWS.includes(draw) || busy) return;
+  closeModal('edit-modal');currentDraw=draw;selected=null;message();$('search-input').value='';
+  for(const id of DRAWS) {
+    $('tab-'+id).className='flex-1 py-2 text-sm font-bold rounded-lg '+(id===draw ? 'bg-white dark:bg-blue-600 text-blue-600 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400');
+    $('tab-'+id).setAttribute('aria-pressed',String(id===draw));
+  }
+  renderGrid();updateSummary();void refresh();
+}
+function openEditModal(number) {
+  const data=draws[currentDraw].entries[number];
+  selected={draw:currentDraw,number,expectedVersion:data?.version ?? null};
+  $('modal-title').textContent='Número '+String(number).padStart(2,'0');
+  $('admin-inputs').classList.toggle('hidden',!isAdmin);
+  $('info-display').classList.toggle('hidden',isAdmin || !data?.name);
+  $('observer-msg').classList.toggle('hidden',isAdmin || !!data?.name);
+  if (isAdmin) {$('input-name').value=data?.name || '';$('input-status').value=data?.status || 'reserved';}
+  else if(data?.name) {$('display-name').textContent=data.name;$('display-status-badge').textContent=data.status==='cancelled' ? 'PAGADO' : 'APARTADO';}
+  openModal('edit-modal');updateControls();
+}
+async function saveData() {
+  if (!selected) return;
+  const name=$('input-name').value.trim();
+  if (!name || name.length>100) {message('Escribe un nombre de hasta 100 caracteres.');return;}
+  if(await write({action:'save',...selected,entry:{name,status:$('input-status').value}})) closeModal('edit-modal');
+}
+async function deleteEntry() {
+  if (selected && await write({action:'delete',...selected})) closeModal('edit-modal');
+}
+function openModal(id) {
+  if (id==='reset-draw-modal' || id==='full-reset-modal') {
+    if (!isAdmin || !synced || busy) return;
+    resetSnapshot={draw:id==='full-reset-modal' ? 'all' : currentDraw,expectedRevisions:Object.fromEntries(DRAWS.map(d=>[d,draws[d].revision]))};
+  }
+  lastFocus=document.activeElement;$(id).classList.remove('hidden');
+  $(id).querySelector('input, select, button, a')?.focus();
+}
+function closeModal(id) {
+  if (busy) return;
+  $(id).classList.add('hidden');lastFocus?.focus();
+}
+async function clearCurrentDraw() {
+  if(resetSnapshot && await write({action:'reset',...resetSnapshot})) closeModal('reset-draw-modal');
+}
+async function factoryReset() {
+  if(resetSnapshot?.draw==='all' && await write({action:'reset',...resetSnapshot})) closeModal('full-reset-modal');
+}
+function exportBackup() {
+  if (!isAdmin || !synced) return;
+  const payload={format:'rifa-backup-v1',draws:Object.fromEntries(DRAWS.map(d=>[d,Object.fromEntries(Object.entries(draws[d].entries).filter(([,v])=>v.name).map(([n,v])=>[n,{name:v.name,status:v.status}]))]))};
+  const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
+  const a=document.createElement('a');a.href=url;a.download='rifa-respaldo-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function previewImport(input) {
+  const file=input.files[0];if(!file || !isAdmin) return;
+  try {
+    if(file.size>65536) throw new Error('El respaldo es demasiado grande.');
+    const data=JSON.parse(await file.text());
+    if(data.format!=='rifa-backup-v1' || !data.draws || typeof data.draws!=='object' || Object.keys(data.draws).some(d=>!DRAWS.includes(d))) throw new Error('Archivo de respaldo no válido.');
+    let count=0;
+    for(const entries of Object.values(data.draws)) {
+      if(!entries || typeof entries!=='object' || Array.isArray(entries)) throw new Error('Respaldo no válido.');
+      for(const [n,e] of Object.entries(entries)) {
+        if(!/^(0|[1-9][0-9]?)$/.test(n) || typeof e?.name!=='string' || !e.name.trim() || e.name.trim().length>100 || !['reserved','cancelled'].includes(e.status)) throw new Error('El respaldo contiene datos no válidos.');
+        count++;
+      }
+    }
+    pendingImport=data.draws;$('import-preview').textContent='El archivo contiene '+count+' ventas. Solo se agregarán números disponibles; las ventas existentes se conservarán.';openModal('import-modal');
+  } catch(error) {message(error.message);} finally {input.value='';}
+}
+async function confirmImport() {
+  if(!pendingImport) return;
+  const result=await write({action:'import',draws:pendingImport});
+  if(result) {pendingImport=null;closeModal('import-modal');message('Se importaron '+result.imported+' ventas.');}
+}
+document.addEventListener('keydown',event=>{
+  const modal=[...document.querySelectorAll('[role="dialog"]')].find(e=>!e.classList.contains('hidden'));
+  if(!modal) return;
+  if(event.key==='Escape' && !busy) closeModal(modal.id);
+  if(event.key==='Tab') {
+    const controls=[...modal.querySelectorAll('input,select,button,a[href]')].filter(e=>!e.disabled && e.getClientRects().length);
+    const first=controls[0],last=controls.at(-1);
+    if(event.shiftKey && document.activeElement===first) {event.preventDefault();last?.focus();}
+    else if(!event.shiftKey && document.activeElement===last) {event.preventDefault();first?.focus();}
+  }
+});
+async function init() {
+  renderGrid();updateControls();
+  try {
+    const session=await api('/api/session');isAdmin=session.isAdmin;
+    $('role-badge').textContent=isAdmin ? 'Administrador' : 'Modo Observador';
+    $('admin-panel').classList.toggle('hidden',!isAdmin);
+    $('admin-entry-btn').classList.toggle('hidden',session.signedIn);
+    $('admin-logout-btn').classList.toggle('hidden',!session.signedIn);
+    if(session.signedIn && !isAdmin) message('Tu cuenta tiene acceso de consulta. Solo la cuenta del administrador puede hacer cambios.');
+  } catch {message('No se pudo comprobar el acceso de administrador. Recarga la página para intentarlo de nuevo.');}
+  await refresh();updateSummary();
+}
+void init();
+setInterval(()=>{if(!document.hidden) void refresh();},5000);
+window.addEventListener('online',()=>void refresh());
+window.addEventListener('offline',()=>setSynced(false));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden) void refresh();});
+
+    </script>
+</body>
+</html>
