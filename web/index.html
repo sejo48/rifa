@@ -43,8 +43,8 @@
                     <p id="role-badge" class="bg-slate-200 dark:bg-slate-700 px-3 py-1 rounded-full text-[10px] font-bold uppercase">Modo Observador</p>
                     <div class="bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 px-2 py-0.5 rounded text-[9px] font-bold uppercase shadow-sm">Guardado en la web</div>
                 </div>
-                <a id="admin-entry-btn" href="/signin-with-chatgpt?return_to=%2F" target="_top" class="text-blue-500 text-xs font-bold hover:underline">Acceso Admin con ChatGPT</a>
-                <a id="admin-logout-btn" href="/signout-with-chatgpt?return_to=%2F" target="_top" class="hidden text-red-500 text-xs font-bold hover:underline">Cerrar sesión</a>
+                <button id="admin-entry-btn" onclick="openModal('login-modal')" class="text-blue-500 text-xs font-bold hover:underline">Acceso Admin</button>
+                <button id="admin-logout-btn" onclick="logoutAdmin()" class="hidden text-red-500 text-xs font-bold hover:underline">Salir de Admin</button>
             </div>
         <p id="sync-status" role="status" aria-live="polite" class="text-xs text-slate-500 mt-3">Conectando con los sorteos…</p>
             <p id="message" role="alert" class="text-sm font-bold text-red-600 mt-2"></p>
@@ -88,6 +88,15 @@
     </div>
 
     <!-- Modales -->
+    <div id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden z-50 flex items-center justify-center p-4">
+      <form onsubmit="event.preventDefault(); loginAdmin()" class="bg-white dark:bg-slate-800 w-full max-w-sm rounded-3xl p-8 text-center shadow-2xl">
+        <h2 id="login-title" class="text-xl font-bold mb-4">Acceso Admin</h2>
+        <label for="admin-password-input" class="block text-sm mb-2">Clave de administración</label>
+        <input type="password" id="admin-password-input" autocomplete="current-password" maxlength="128" required class="w-full px-4 py-3 rounded-xl border-2 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-center text-2xl mb-4">
+        <p class="modal-error text-red-600 text-sm font-bold mb-3" role="alert"></p>
+        <div class="flex gap-3"><button type="button" onclick="closeModal('login-modal')" class="flex-1 py-3 bg-slate-100 dark:bg-slate-700 rounded-xl">Cerrar</button><button id="login-submit" type="submit" class="flex-1 py-3 bg-blue-600 text-white rounded-xl font-bold">Entrar</button></div>
+      </form>
+    </div>
     <div id="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" class="fixed inset-0 bg-slate-900/60 hidden z-50 flex items-center justify-center p-4">
       <div class="bg-white dark:bg-slate-800 max-w-sm w-full p-6 rounded-2xl">
         <h2 id="import-title" class="text-xl font-bold">Importar respaldo</h2>
@@ -151,6 +160,7 @@ let refreshing = false;
 let pendingImport = null;
 let requestGeneration = 0;
 let lastFocus = null;
+let authenticating = false;
 const $ = id => document.getElementById(id);
 function message(text='') { $('message').textContent = text; document.querySelectorAll('.modal-error').forEach(el=>el.textContent=text); }
 function toggleTheme() {
@@ -266,11 +276,12 @@ function openModal(id) {
     if (!isAdmin || !synced || busy) return;
     resetSnapshot={draw:id==='full-reset-modal' ? 'all' : currentDraw,expectedRevisions:Object.fromEntries(DRAWS.map(d=>[d,draws[d].revision]))};
   }
-  lastFocus=document.activeElement;$(id).classList.remove('hidden');
+  message();lastFocus=document.activeElement;$(id).classList.remove('hidden');
   $(id).querySelector('input, select, button, a')?.focus();
 }
 function closeModal(id) {
-  if (busy) return;
+  if (busy || authenticating) return;
+  if (id==='login-modal') $('admin-password-input').value='';
   $(id).classList.add('hidden');lastFocus?.focus();
 }
 async function clearCurrentDraw() {
@@ -318,16 +329,35 @@ document.addEventListener('keydown',event=>{
     else if(!event.shiftKey && document.activeElement===last) {event.preventDefault();first?.focus();}
   }
 });
+function applySession(admin) {
+  isAdmin=admin;
+  $('role-badge').textContent=admin ? 'Administrador' : 'Modo Observador';
+  $('admin-panel').classList.toggle('hidden',!admin);
+  $('admin-entry-btn').classList.toggle('hidden',admin);
+  $('admin-logout-btn').classList.toggle('hidden',!admin);
+  updateControls();updateSummary();
+}
+async function loginAdmin() {
+  if(authenticating) return;
+  authenticating=true;$('login-submit').disabled=true;message();
+  let loggedIn=false;
+  try {
+    const session=await api('/api/login',{password:$('admin-password-input').value});
+    applySession(session.isAdmin);loggedIn=session.isAdmin;
+  } catch(error) {message(error.message);} finally {
+    authenticating=false;$('login-submit').disabled=false;$('admin-password-input').value='';
+  }
+  if(loggedIn) {closeModal('login-modal');await refresh();}
+}
+async function logoutAdmin() {
+  if(busy || authenticating) return;
+  try {await api('/api/logout',{});applySession(false);closeModal('edit-modal');message();}
+  catch(error) {message(error.message);}
+}
 async function init() {
   renderGrid();updateControls();
-  try {
-    const session=await api('/api/session');isAdmin=session.isAdmin;
-    $('role-badge').textContent=isAdmin ? 'Administrador' : 'Modo Observador';
-    $('admin-panel').classList.toggle('hidden',!isAdmin);
-    $('admin-entry-btn').classList.toggle('hidden',session.signedIn);
-    $('admin-logout-btn').classList.toggle('hidden',!session.signedIn);
-    if(session.signedIn && !isAdmin) message('Tu cuenta tiene acceso de consulta. Solo la cuenta del administrador puede hacer cambios.');
-  } catch {message('No se pudo comprobar el acceso de administrador. Recarga la página para intentarlo de nuevo.');}
+  try {applySession((await api('/api/session')).isAdmin);}
+  catch {message('No se pudo comprobar el acceso de administrador. Recarga la página para intentarlo de nuevo.');}
   await refresh();updateSummary();
 }
 void init();

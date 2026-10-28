@@ -9,17 +9,67 @@ const json = (data, status=200) => new Response(JSON.stringify(data), {status, h
   'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'no-store',
   'X-Content-Type-Options':'nosniff'
 }});
-async function adminIdentity(request, env) {
-  const userId = request.headers.get('oai-authenticated-user-id');
-  if (!userId) return false;
-  let admin = await env.DB.prepare('SELECT user_id FROM administrators WHERE id = 1').first();
-  // Bootstrap only the configured account, then authorize using its stable Site user ID.
-  if (!admin && env.ADMIN_EMAIL && request.headers.get('oai-authenticated-user-email')?.toLowerCase() === env.ADMIN_EMAIL.toLowerCase().trim()) {
-    await env.DB.prepare('INSERT INTO administrators (id, user_id) VALUES (1, ?) ON CONFLICT(id) DO NOTHING').bind(userId).run();
-    admin = await env.DB.prepare('SELECT user_id FROM administrators WHERE id = 1').first();
-  }
-  return admin?.user_id === userId;
+const COOKIE = '__Host-rifa_admin';
+const SESSION_SECONDS = 12 * 60 * 60;
+const hex = bytes => Array.from(new Uint8Array(bytes), b=>b.toString(16).padStart(2,'0')).join('');
+const digest = async text => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
+function sessionToken(request) {
+  const token = request.headers.get('Cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith(COOKIE+'='))?.slice(COOKIE.length+1);
+  return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
 }
+async function adminIdentity(request, env) {
+  if (!env.ADMIN_PASSWORD_HASH) return false;
+  const token = sessionToken(request);
+  if (!token) return false;
+  const row = await env.DB.prepare('SELECT auth_version FROM admin_sessions WHERE token_hash = ? AND expires_at > ?').bind(await digest(token), Math.floor(Date.now()/1000)).first();
+  return row?.auth_version === await digest(env.ADMIN_PASSWORD_HASH);
+}
+function requireOrigin(request) {
+  if (request.headers.get('Origin') !== new URL(request.url).origin || request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new HttpError(403,'Origen no permitido.');
+  if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new HttpError(415,'Formato no permitido.');
+}
+async function requestJson(request, limit=65536) {
+  if (Number(request.headers.get('Content-Length') || 0)>limit) throw new HttpError(413,'Archivo demasiado grande.');
+  const text = await request.text();
+  if (new TextEncoder().encode(text).length>limit) throw new HttpError(413,'Archivo demasiado grande.');
+  try {return JSON.parse(text);} catch {throw new HttpError(400,'JSON no válido.');}
+}
+async function login(request, env) {
+  requireOrigin(request);
+  if (!/^[a-f0-9]{32}:[a-f0-9]{64}$/.test(env.ADMIN_PASSWORD_HASH || '')) throw new HttpError(503,'El acceso de administración no está configurado.');
+  const body = await requestJson(request,1024);
+  if (typeof body?.password !== 'string' || body.password.length>128) throw new HttpError(400,'Escribe la clave de administración.');
+  const now = Math.floor(Date.now()/1000);
+  const key = await digest((request.headers.get('CF-Connecting-IP') || 'unknown')+':'+env.ADMIN_PASSWORD_HASH);
+  const attempt = await env.DB.prepare(`INSERT INTO login_attempts (id, window_start, attempts) VALUES (?, ?, 1)
+    ON CONFLICT(id) DO UPDATE SET
+      attempts = CASE WHEN login_attempts.window_start <= ? THEN 1 ELSE login_attempts.attempts + 1 END,
+      window_start = CASE WHEN login_attempts.window_start <= ? THEN excluded.window_start ELSE login_attempts.window_start END
+    RETURNING attempts`).bind(key,now,now-900,now-900).first();
+  if (attempt.attempts>5) throw new HttpError(429,'Demasiados intentos. Espera 15 minutos antes de volver a entrar.');
+  const [salt, expected] = env.ADMIN_PASSWORD_HASH.split(':');
+  const material = await crypto.subtle.importKey('raw',new TextEncoder().encode(body.password),'PBKDF2',false,['deriveBits']);
+  const actual = hex(await crypto.subtle.deriveBits({name:'PBKDF2',salt:Uint8Array.from(salt.match(/../g),v=>parseInt(v,16)),iterations:100000,hash:'SHA-256'},material,256));
+  let difference=0;
+  for(let i=0;i<expected.length;i++) difference |= expected.charCodeAt(i)^actual.charCodeAt(i);
+  if (difference) throw new HttpError(401,'Clave incorrecta.');
+  const token = hex(crypto.getRandomValues(new Uint8Array(32)));
+  await env.DB.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').bind(now).run();
+  await env.DB.prepare('DELETE FROM login_attempts WHERE window_start <= ? OR id = ?').bind(now-900,key).run();
+  await env.DB.prepare('INSERT INTO admin_sessions (token_hash, expires_at, auth_version) VALUES (?, ?, ?)').bind(await digest(token),now+SESSION_SECONDS,await digest(env.ADMIN_PASSWORD_HASH)).run();
+  const response = json({isAdmin:true});
+  response.headers.set('Set-Cookie',`${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_SECONDS}`);
+  return response;
+}
+async function logout(request, env) {
+  requireOrigin(request);
+  const token = sessionToken(request);
+  if (token) await env.DB.prepare('DELETE FROM admin_sessions WHERE token_hash = ?').bind(await digest(token)).run();
+  const response = json({isAdmin:false});
+  response.headers.set('Set-Cookie',`${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`);
+  return response;
+}
+
 async function readState(env) {
   const row = await env.DB.prepare('SELECT data, revision FROM app_state WHERE id = ?').bind('lottery').first();
   return {state:row ? JSON.parse(row.data) : emptyState(), revision:row?.revision ?? null};
@@ -103,15 +153,13 @@ export default {
       if (!url.pathname.startsWith('/api/')) return json({error:'Página no encontrada.'},404);
       if (!env.DB) throw new HttpError(503,'El almacenamiento compartido todavía no está disponible.');
       if (url.pathname === '/api/state' && request.method === 'GET') return json({draws:(await readState(env)).state});
-      if (url.pathname === '/api/session' && request.method === 'GET') return json({isAdmin:await adminIdentity(request,env), signedIn:!!request.headers.get('oai-authenticated-user-id')});
+      if (url.pathname === '/api/session' && request.method === 'GET') return json({isAdmin:await adminIdentity(request,env)});
+      if (url.pathname === '/api/login' && request.method === 'POST') return await login(request,env);
+      if (url.pathname === '/api/logout' && request.method === 'POST') return await logout(request,env);
       if (url.pathname === '/api/state' && request.method === 'POST') {
-        if (request.headers.get('Origin') !== url.origin || request.headers.get('Sec-Fetch-Site') === 'cross-site') throw new HttpError(403,'Origen no permitido.');
-        if (!request.headers.get('Content-Type')?.startsWith('application/json')) throw new HttpError(415,'Formato no permitido.');
+        requireOrigin(request);
         if (!await adminIdentity(request,env)) throw new HttpError(403,'Solo el administrador puede modificar los sorteos.');
-        if (Number(request.headers.get('Content-Length') || 0)>65536) throw new HttpError(413,'Archivo demasiado grande.');
-        const text = await request.text();
-        if (new TextEncoder().encode(text).length>65536) throw new HttpError(413,'Archivo demasiado grande.');
-        let body; try {body=JSON.parse(text);} catch {throw new HttpError(400,'JSON no válido.');}
+        const body = await requestJson(request);
         return json(await mutate(env,body));
       }
       return json({error:'Ruta o método no permitido.'},404);

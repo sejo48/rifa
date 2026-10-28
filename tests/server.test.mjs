@@ -3,17 +3,25 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import worker from '../worker/index.js';
+import {pbkdf2Sync, createHash} from 'node:crypto';
 const ORIGIN='https://rifa.example';
-const owner={'oai-authenticated-user-id':'site-owner','oai-authenticated-user-email':'owner@example.com'};
+const fixturePassword='test-only-password';
+const salt='ab'.repeat(16);
+const hash=salt+':'+pbkdf2Sync(fixturePassword,Buffer.from(salt,'hex'),100000,32,'sha256').toString('hex');
+const digest=text=>createHash('sha256').update(text).digest('hex');
+const fixtureToken='cd'.repeat(32);
+const owner={Cookie:'__Host-rifa_admin='+fixtureToken};
 function setup() {
  const sqlite=new DatabaseSync(':memory:');
  sqlite.exec(readFileSync(new URL('../drizzle/0000_shared_lottery.sql',import.meta.url),'utf8').replace('--> statement-breakpoint',''));
+ sqlite.exec(readFileSync(new URL('../drizzle/0001_password_sessions.sql',import.meta.url),'utf8').replaceAll('--> statement-breakpoint',''));
+ sqlite.prepare('INSERT INTO admin_sessions (token_hash, expires_at, auth_version) VALUES (?, ?, ?)').run(digest(fixtureToken),Math.floor(Date.now()/1000)+3600,digest(hash));
  const DB={prepare(sql){let args=[];return {bind(...a){args=a;return this;},async first(){return sqlite.prepare(sql).get(...args)??null;},async run(){const r=sqlite.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}};}};}};
- const env={DB,ADMIN_EMAIL:'owner@example.com'};
+ const env={DB,ADMIN_PASSWORD_HASH:hash};
  async function call(path='/api/state',body,identity=owner,headers={}) {
   const req=new Request(ORIGIN+path,{method:body===undefined?'GET':'POST',headers:{...identity,...(body===undefined?{}:{Origin:ORIGIN,'Content-Type':'application/json'}),...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
   const response=await worker.fetch(req,env);
-  return {status:response.status,body:await response.json()};
+  return {status:response.status,body:await response.json(),cookie:response.headers.get('Set-Cookie')?.split(';')[0],headers:response.headers};
  }
  return {call,env,sqlite};
 }
@@ -23,12 +31,43 @@ test('anonymous visitors read shared state but cannot write or reset',async()=>{
  assert.equal((await call('/api/state',undefined,{})).status,200);
  for(const body of [sale(1,'Alice'),{action:'delete',draw:'draw1',number:1,expectedVersion:null},{action:'reset',draw:'all',expectedRevisions:{draw1:null,draw2:null}}]) assert.equal((await call('/api/state',body,{})).status,403);
 });
-test('admin bootstraps only for configured email, then uses stable identity',async()=>{
+test('only a valid password creates an administrator session, logout revokes it',async()=>{
  const {call}=setup();
- assert.equal((await call('/api/session',undefined,{'oai-authenticated-user-id':'other','oai-authenticated-user-email':'other@example.com'})).body.isAdmin,false);
- assert.equal((await call('/api/session')).body.isAdmin,true);
- assert.equal((await call('/api/session',undefined,{'oai-authenticated-user-id':'other','oai-authenticated-user-email':'owner@example.com'})).body.isAdmin,false);
- assert.equal((await call('/api/session',undefined,{'oai-authenticated-user-id':'site-owner','oai-authenticated-user-email':'new@example.com'})).body.isAdmin,true);
+ assert.equal((await call('/api/session',undefined,{})).body.isAdmin,false);
+ assert.equal((await call('/api/session',undefined,{'oai-authenticated-user-id':'site-owner','oai-authenticated-user-email':'owner@example.com'})).body.isAdmin,false);
+ assert.equal((await call('/api/login',{password:'incorrect'},{})).status,401);
+ const logged=await call('/api/login',{password:fixturePassword},{});
+ assert.equal(logged.status,200);assert.ok(logged.cookie);
+ assert.match(logged.headers.get('Set-Cookie'),/HttpOnly; Secure; SameSite=Strict/);
+ const session={Cookie:logged.cookie};
+ assert.equal((await call('/api/session',undefined,session)).body.isAdmin,true);
+ assert.equal((await call('/api/state',sale(1,'Allowed'),session)).status,200);
+ assert.equal((await call('/api/logout',{},session)).status,200);
+ assert.equal((await call('/api/session',undefined,session)).body.isAdmin,false);
+ assert.equal((await call('/api/state',sale(2,'Denied'),session)).status,403);
+});
+test('five password failures lock out further attempts for the window',async()=>{
+ const {call,sqlite}=setup();
+ for(let i=0;i<5;i++) assert.equal((await call('/api/login',{password:'incorrect'},{})).status,401);
+ assert.equal((await call('/api/login',{password:fixturePassword},{})).status,429);
+ sqlite.prepare('UPDATE login_attempts SET window_start = ?').run(Math.floor(Date.now()/1000)-901);
+ assert.equal((await call('/api/login',{password:fixturePassword},{})).status,200);
+});
+test('expired, forged and rotated sessions fail closed',async()=>{
+ const {call,env,sqlite}=setup();
+ assert.equal((await call('/api/session',undefined,{Cookie:'__Host-rifa_admin=forged'})).body.isAdmin,false);
+ sqlite.prepare('UPDATE admin_sessions SET expires_at = 0').run();
+ assert.equal((await call('/api/session')).body.isAdmin,false);
+ sqlite.prepare('UPDATE admin_sessions SET expires_at = ?').run(Math.floor(Date.now()/1000)+1000);
+ env.ADMIN_PASSWORD_HASH='ff'.repeat(16)+':'+hash.split(':')[1];
+ assert.equal((await call('/api/session')).body.isAdmin,false);
+ delete env.ADMIN_PASSWORD_HASH;
+ assert.equal((await call('/api/login',{password:fixturePassword},{})).status,503);
+});
+test('login and logout reject cross-origin requests',async()=>{
+ const {call}=setup();
+ assert.equal((await call('/api/login',{password:fixturePassword},{},{Origin:'https://evil.example'})).status,403);
+ assert.equal((await call('/api/logout',{},owner,{Origin:'https://evil.example'})).status,403);
 });
 test('independent simultaneous edits merge instead of losing a sale',async()=>{
  const {call}=setup();await call('/api/session');
@@ -94,5 +133,5 @@ test('buyer markup is stored as data; frontend summaries use textContent',async(
  const html=readFileSync(new URL('../web/index.html',import.meta.url),'utf8');
  assert.ok(html.includes('label.textContent=name'));
  assert.ok(!html.includes('.innerHTML'));assert.ok(!html.includes('localStorage.clear'));
- assert.ok(!html.includes('8384'));
+ assert.ok(!html.includes(fixturePassword));
 });

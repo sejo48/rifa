@@ -16,7 +16,9 @@ async function client({admin=true,offline=false}={}){
  const document={hidden:false,activeElement:null,getElementById(id){if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},createElement:element,querySelectorAll(){return [];},addEventListener(){}};
  const ctx={document,AbortSignal,Date,Map,Object,String,JSON,console,URL,Blob,setInterval(){},setTimeout(){},localStorage:{setItem:(k,v)=>storage.set(k,v)},fetch:async(path,opts)=>{
   if(offline) throw new TypeError('offline');
-  if(path==='/api/session') return Response.json({isAdmin:admin,signedIn:admin});
+  if(path==='/api/session') return Response.json({isAdmin:admin});
+  if(path==='/api/login') return opts.body && JSON.parse(opts.body).password==='test-only-password' ? Response.json({isAdmin:true}) : Response.json({error:'Clave incorrecta.'},{status:401});
+  if(path==='/api/logout') return Response.json({isAdmin:false});
   if(opts.method==='POST') {const body=JSON.parse(opts.body);writes.push(body);state[body.draw].entries[body.number]={...body.entry,version:'new-version'};}
   return Response.json({draws:structuredClone(state)});
  }};ctx.window=ctx;ctx.addEventListener=()=>{};
@@ -51,4 +53,22 @@ test('offline client blocks writes and preserves unrelated local storage',async(
  await ctx.saveData();await ctx.factoryReset();
  assert.equal(writes.length,0);assert.equal(storage.get('other-app'),'keep');
  assert.ok(nodes.get('sync-status').textContent.includes('Sin conexión'));
+});
+
+test('password modal logs in and logs out without ChatGPT',async()=>{
+ const {ctx,nodes}=await client({admin:false});
+ ctx.document.getElementById('admin-password-input').value='test-only-password';
+ await ctx.loginAdmin();
+ assert.equal(nodes.get('role-badge').textContent,'Administrador');
+ assert.equal(nodes.get('admin-password-input').value,'');
+ await ctx.logoutAdmin();
+ assert.equal(nodes.get('role-badge').textContent,'Modo Observador');
+});
+test('incorrect password leaves the visitor in observer mode',async()=>{
+ const {ctx,nodes}=await client({admin:false});
+ ctx.document.getElementById('admin-password-input').value='wrong';
+ await ctx.loginAdmin();
+ assert.equal(nodes.get('role-badge').textContent,'Modo Observador');
+ assert.equal(nodes.get('message').textContent,'Clave incorrecta.');
+ assert.equal(nodes.get('admin-password-input').value,'');
 });
